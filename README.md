@@ -1,4 +1,4 @@
-# MechaFormer: Supplementary Materials
+# MechaFormer (AAAI 2026): Supplementary Materials
 
 This repository contains the source code, evaluation scripts, and supplementary materials for the paper "MechaFormer: Sequence Learning for Kinematic Mechanism Design Automation".
 
