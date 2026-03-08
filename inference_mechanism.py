@@ -9,6 +9,86 @@ from ground_joint_utils import GroundJointNormalizer
 from generation_utils import autoregressive_generate
 
 class MechanismInference:
+    @staticmethod
+    def _extract_model_state_dict(checkpoint):
+        """Support both raw state_dict files and training checkpoints."""
+        if isinstance(checkpoint, dict):
+            for key in ('model_state_dict', 'state_dict'):
+                state_dict = checkpoint.get(key)
+                if isinstance(state_dict, dict):
+                    return state_dict
+
+            if checkpoint and any(torch.is_tensor(value) for value in checkpoint.values()):
+                return checkpoint
+
+        raise ValueError(
+            "Unsupported checkpoint format. Expected a raw state_dict or a checkpoint "
+            "containing 'model_state_dict'."
+        )
+
+    @staticmethod
+    def _coerce_point_prefix(point_prefix):
+        """Normalize point prefix inputs to (index, x, y)."""
+        if isinstance(point_prefix, dict):
+            return (
+                int(point_prefix['index']),
+                float(point_prefix['x']),
+                float(point_prefix['y']),
+            )
+
+        if isinstance(point_prefix, (list, tuple)) and len(point_prefix) == 3:
+            return int(point_prefix[0]), float(point_prefix[1]), float(point_prefix[2])
+
+        raise ValueError(
+            "Point prefixes must be dicts with index/x/y keys or tuples of "
+            "(index, x, y)."
+        )
+
+    def _coord_to_bin_token(self, coord):
+        """Quantize a coordinate to the BIN_* vocabulary used during training."""
+        coord_clipped = np.clip(coord, Config.COORD_MIN, Config.COORD_MAX)
+        bin_size = (Config.COORD_MAX - Config.COORD_MIN) / Config.COORD_BINS
+        bin_idx = int((coord_clipped - Config.COORD_MIN) / bin_size)
+        if bin_idx >= Config.COORD_BINS:
+            bin_idx = Config.COORD_BINS - 1
+        return f"BIN_{bin_idx}"
+
+    def _require_vocab_token(self, token):
+        """Resolve a token to its vocabulary id or raise a helpful error."""
+        if token not in self.vocab:
+            raise KeyError(f"Token '{token}' not found in the vocabulary.")
+        return self.vocab[token]
+
+    def build_prefix_tokens(self, mech_type=None, point_prefixes=None):
+        """Build an autoregressive prefix from mechanism type and point hints."""
+        prefix_tokens = []
+
+        if mech_type is not None:
+            prefix_tokens.extend([
+                self._require_vocab_token('MECH_TYPE:'),
+                self._require_vocab_token(mech_type),
+            ])
+
+        if point_prefixes:
+            if mech_type is None:
+                raise ValueError(
+                    "point_prefixes require mech_type so the prefix matches the "
+                    "training DSL order."
+                )
+
+            prefix_tokens.append(self._require_vocab_token('POINTS:'))
+            for point_prefix in point_prefixes:
+                point_index, x_coord, y_coord = self._coerce_point_prefix(point_prefix)
+                prefix_tokens.extend([
+                    self._require_vocab_token(f'P{point_index}'),
+                    self._require_vocab_token('X:'),
+                    self._require_vocab_token(self._coord_to_bin_token(x_coord)),
+                    self._require_vocab_token('Y:'),
+                    self._require_vocab_token(self._coord_to_bin_token(y_coord)),
+                ])
+
+        return prefix_tokens or None
+
     def __init__(self, model_path, vocab_path):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -47,9 +127,10 @@ class MechanismInference:
             ff_no_bias=True,
         ).to(self.device)
         
-        # Load model weights (weights-only version)
+        # Load model weights from either a raw state_dict or a training checkpoint.
         try:
-            model_weights = torch.load(model_path, map_location=self.device)
+            checkpoint = torch.load(model_path, map_location=self.device)
+            model_weights = self._extract_model_state_dict(checkpoint)
             self.model.load_state_dict(model_weights)
             self.model.eval()
             print(f"Model weights loaded successfully from {model_path}")
@@ -75,7 +156,8 @@ class MechanismInference:
         
         return normalized_cp.astype(np.float32)
     
-    def generate_dsl(self, curve_points, max_length=Config.MAX_SEQ_LEN, process_curve=True, temperature=0.01, mech_type=None, top_k=5):
+    def generate_dsl(self, curve_points, max_length=Config.MAX_SEQ_LEN, process_curve=True,
+                     temperature=0.01, mech_type=None, top_k=5, point_prefixes=None):
         """Generate DSL sequence from curve points using autoregressive generation"""
         with torch.no_grad():
             # Preprocess curve to B-spline control points
@@ -85,11 +167,10 @@ class MechanismInference:
                 control_points = curve_points
             control_tensor = torch.FloatTensor(control_points).unsqueeze(0).to(self.device)
             
-            # Prepare prefix tokens if mechanism type is specified
-            prefix_tokens = None
-            if mech_type is not None:
-                if 'MECH_TYPE:' in self.vocab and mech_type in self.vocab:
-                    prefix_tokens = [self.vocab['MECH_TYPE:'], self.vocab[mech_type]]
+            prefix_tokens = self.build_prefix_tokens(
+                mech_type=mech_type,
+                point_prefixes=point_prefixes,
+            )
             
             # Use autoregressive_generate from generation_utils
             generated_tensor = autoregressive_generate(
@@ -203,11 +284,19 @@ class MechanismInference:
                 return 0.0
         return 0.0
 
-    def generate_mechanism_params(self, curve_points, temperature=0.01, mech_type=None, top_k=50, process_curve=True):
+    def generate_mechanism_params(self, curve_points, temperature=0.01, mech_type=None,
+                                  top_k=50, process_curve=True, point_prefixes=None):
         """Generate mechanism parameters directly from curve points for backend API"""
         try:
             # Generate DSL sequence
-            generated_sequence = self.generate_dsl(curve_points, temperature=temperature, mech_type=mech_type, top_k=top_k, process_curve=process_curve)
+            generated_sequence = self.generate_dsl(
+                curve_points,
+                temperature=temperature,
+                mech_type=mech_type,
+                top_k=top_k,
+                process_curve=process_curve,
+                point_prefixes=point_prefixes,
+            )
             
             # Convert to readable DSL
             dsl_string = self.sequence_to_dsl(generated_sequence)

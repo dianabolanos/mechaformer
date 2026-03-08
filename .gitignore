@@ -10,5 +10,6 @@ __pycache__/
 *.pyzwzw
 
 *.mp4
-
+mechanism_transformer_weights.pth
 processed_data.pkl
+simulator
