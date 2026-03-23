@@ -8,6 +8,8 @@ __pycache__/
 *.pyzw
 *.pyzwz
 *.pyzwzw
+*.npy
+*.jpg
 
 *.mp4
 mechanism_transformer_weights.pth
