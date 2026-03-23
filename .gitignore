@@ -13,3 +13,10 @@ __pycache__/
 mechanism_transformer_weights.pth
 processed_data.pkl
 simulator
+
+# Generated outputs (images, data, videos)
+motion_synthesis/examples/output_smoothness/
+motion_synthesis/examples/output_crank_length/
+
+# macOS
+.DS_Store

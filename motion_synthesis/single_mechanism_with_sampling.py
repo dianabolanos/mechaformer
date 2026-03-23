@@ -86,8 +86,8 @@ DEFAULT_AFFINE_TRANSLATIONS = [
     (0.3, 0.3),
     (-0.3, -0.3),
 ]
-DEFAULT_CRANK_LENGTHS = [0.5, 0.75, 1.0]
-DEFAULT_CRANK_ANGLE_STEP = 30.0
+DEFAULT_CRANK_LENGTHS = [0.5, 0.75, 1.0, 1.5, 2.0]
+DEFAULT_CRANK_ANGLE_STEP = 45.0
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / 'output'
 GROUND_JOINT_NORMALIZER = GroundJointNormalizer(str(PROJECT_ROOT / 'wrapper' / 'BSIdict_468.json'))
 
@@ -900,20 +900,34 @@ def create_animation(wrapper, animator, target_curve, coupler_traj, poses, save_
     """Create an animation showing the mechanism tracing the target curve."""
     fig, ax = plt.subplots(figsize=(12, 8))
 
-    all_x, all_y = [], []
-    all_x.extend(target_curve[:, 0])
-    all_y.extend(target_curve[:, 1])
-    all_x.extend(coupler_traj[:, 0])
-    all_y.extend(coupler_traj[:, 1])
-
-    for pose in poses:
-        for point in pose:
-            all_x.append(point[0])
-            all_y.append(point[1])
+    # Anchor bounds to the coupler trajectory and target curve.  Pose points are
+    # collected separately so that prismatic joints — which can slide far outside
+    # the working envelope — don't blow up the axes.
+    ref_x = np.concatenate([target_curve[:, 0], coupler_traj[:, 0]])
+    ref_y = np.concatenate([target_curve[:, 1], coupler_traj[:, 1]])
 
     margin = 1.0
-    x_min, x_max = min(all_x) - margin, max(all_x) + margin
-    y_min, y_max = min(all_y) - margin, max(all_y) + margin
+    ref_x_min, ref_x_max = ref_x.min() - margin, ref_x.max() + margin
+    ref_y_min, ref_y_max = ref_y.min() - margin, ref_y.max() + margin
+
+    # Expand only for pose points that lie within 3× the reference range (filters
+    # out runaway prismatic sliders while keeping the full mechanism visible).
+    x_span = ref_x_max - ref_x_min
+    y_span = ref_y_max - ref_y_min
+    pose_x, pose_y = [], []
+    for pose in poses:
+        for point in pose:
+            px, py = float(point[0]), float(point[1])
+            if (ref_x_min - x_span < px < ref_x_max + x_span and
+                    ref_y_min - y_span < py < ref_y_max + y_span):
+                pose_x.append(px)
+                pose_y.append(py)
+
+    all_x = np.concatenate([ref_x, pose_x]) if pose_x else ref_x
+    all_y = np.concatenate([ref_y, pose_y]) if pose_y else ref_y
+
+    x_min, x_max = float(all_x.min()) - margin, float(all_x.max()) + margin
+    y_min, y_max = float(all_y.min()) - margin, float(all_y.max()) + margin
 
     def animate_frame(frame):
         ax.clear()

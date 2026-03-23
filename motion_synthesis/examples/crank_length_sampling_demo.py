@@ -19,7 +19,7 @@ def main():
         crank_angles=build_circle_angles(90.0),
     )
     run_smoothness_selection_demo(
-        sample_index=365,
+        sample_index=0,
         output_dir=output_dir,
         strategy=strategy,
         optimize_for='curve',
